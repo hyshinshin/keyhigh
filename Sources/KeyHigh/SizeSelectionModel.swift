@@ -2,6 +2,7 @@ import Foundation
 import AppKit
 
 enum CharacterSize: Int, CaseIterable, Identifiable {
+    case tiny   = 100
     case small  = 200
     case medium = 400
     case large  = 600
@@ -11,27 +12,10 @@ enum CharacterSize: Int, CaseIterable, Identifiable {
 
     var displayName: String {
         switch self {
+        case .tiny:   return "Tiny (100)"
         case .small:  return "Small (200)"
         case .medium: return "Medium (400)"
         case .large:  return "Large (600)"
         }
-    }
-}
-
-final class SizeSelectionModel: ObservableObject {
-
-    @Published private(set) var current: CharacterSize
-
-    private let defaultsKey = "characterSize"
-
-    init(defaultSize: CharacterSize = .small) {
-        let saved = (UserDefaults.standard.object(forKey: "characterSize") as? Int)
-            .flatMap(CharacterSize.init(rawValue:))
-        self.current = saved ?? defaultSize
-    }
-
-    func select(_ size: CharacterSize) {
-        current = size
-        UserDefaults.standard.set(size.rawValue, forKey: defaultsKey)
     }
 }

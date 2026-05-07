@@ -4,12 +4,13 @@ import Combine
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
 
-    private var panel: CharacterPanel?
     private var tracker: TypingSpeedTracker?
-    private var selection: CharacterSelectionModel?
-    private var sizeModel: SizeSelectionModel?
     private var monitor: TypingMonitor?
+    private var store: InstancesStore?
+
+    private var panels: [UUID: CharacterPanel] = [:]
     private var cancellables: Set<AnyCancellable> = []
+    private var sizeCancellables: [UUID: AnyCancellable] = [:]
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         // Background-style app: no Dock icon, no menu bar item.
@@ -21,34 +22,71 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         let tracker = TypingSpeedTracker()
-        let selection = CharacterSelectionModel(library: library, defaultID: "mouse")
-        let sizeModel = SizeSelectionModel(defaultSize: .small)
+        let store = InstancesStore(library: library)
         self.tracker = tracker
-        self.selection = selection
-        self.sizeModel = sizeModel
+        self.store = store
 
-        let view = CharacterView(tracker: tracker, selection: selection, sizeModel: sizeModel)
-        let host = NSHostingView(rootView: view)
-        host.frame = NSRect(origin: .zero, size: sizeModel.current.nsSize)
-        host.autoresizingMask = [.width, .height]
-
-        let panel = CharacterPanel(initialSize: sizeModel.current.nsSize)
-        panel.contentView = host
-        panel.orderFrontRegardless()
-        self.panel = panel
-
-        // Resize the panel whenever the user picks a new size from the menu.
-        sizeModel.$current
-            .removeDuplicates()
-            .dropFirst()                                 // skip the initial value (panel was already built with it)
-            .sink { [weak panel] newSize in
-                panel?.applySize(newSize.nsSize)
+        // Spawn one panel per instance, then keep them in sync as the store mutates.
+        for inst in store.instances {
+            spawnPanel(for: inst, tracker: tracker, store: store)
+        }
+        store.$instances
+            .sink { [weak self] list in
+                self?.syncPanels(with: list, tracker: tracker, store: store)
             }
             .store(in: &cancellables)
 
         let monitor = TypingMonitor(tracker: tracker)
         monitor.start()
         self.monitor = monitor
+    }
+
+    private func syncPanels(with instances: [CharacterInstance],
+                            tracker: TypingSpeedTracker,
+                            store: InstancesStore) {
+        let aliveIDs = Set(instances.map { $0.id })
+        // remove panels whose instance is gone
+        for id in Array(panels.keys) where !aliveIDs.contains(id) {
+            panels[id]?.orderOut(nil)
+            panels.removeValue(forKey: id)
+            sizeCancellables.removeValue(forKey: id)
+        }
+        // spawn panels for newly added instances
+        for inst in instances where panels[inst.id] == nil {
+            spawnPanel(for: inst, tracker: tracker, store: store)
+        }
+    }
+
+    private func spawnPanel(for instance: CharacterInstance,
+                            tracker: TypingSpeedTracker,
+                            store: InstancesStore) {
+        let frame = NSRect(origin: instance.origin, size: instance.size.nsSize)
+        let panel = CharacterPanel(initialFrame: frame)
+
+        let view = CharacterView(tracker: tracker, instance: instance, store: store)
+        let host = NSHostingView(rootView: view)
+        host.frame = NSRect(origin: .zero, size: instance.size.nsSize)
+        host.autoresizingMask = [.width, .height]
+        panel.contentView = host
+
+        panel.onClick = { [weak instance] in
+            instance?.recordClick()
+        }
+        panel.onMove = { [weak instance] newOrigin in
+            instance?.updateOrigin(newOrigin)
+        }
+
+        panel.orderFrontRegardless()
+        panels[instance.id] = panel
+
+        // Resize the panel whenever this instance's size changes.
+        sizeCancellables[instance.id] = instance.$sizeRaw
+            .removeDuplicates()
+            .dropFirst()
+            .sink { [weak panel, weak instance] _ in
+                guard let panel, let instance else { return }
+                panel.applySize(instance.size.nsSize)
+            }
     }
 
     func applicationWillTerminate(_ notification: Notification) {

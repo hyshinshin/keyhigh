@@ -2,22 +2,25 @@ import AppKit
 
 final class CharacterPanel: NSPanel {
 
-    private static let originDefaultsKey = "characterOrigin"
+    /// Fired when the user clicks the panel without dragging it.
+    var onClick: (() -> Void)?
 
-    init(initialSize: NSSize) {
-        let initialFrame = NSRect(origin: .zero, size: initialSize)
+    /// Fired with the new bottom-left origin after a drag gesture finishes.
+    var onMove: ((NSPoint) -> Void)?
+
+    init(initialFrame: NSRect) {
         super.init(
             contentRect: initialFrame,
             styleMask: [.borderless, .nonactivatingPanel],
             backing: .buffered,
             defer: false
         )
-
         isOpaque = false
         backgroundColor = .clear
         hasShadow = false
         isMovable = true
-        isMovableByWindowBackground = true
+        // We drive drag manually inside mouseDown so we can also detect taps.
+        isMovableByWindowBackground = false
         ignoresMouseEvents = false
         isReleasedWhenClosed = false
         hidesOnDeactivate = false
@@ -29,72 +32,61 @@ final class CharacterPanel: NSPanel {
             .fullScreenAuxiliary
         ]
         animationBehavior = .none
-
-        let origin = Self.loadSavedOrigin(forSize: initialSize)
-            ?? Self.defaultOrigin(forSize: initialSize)
-        setFrameOrigin(origin)
-
-        NotificationCenter.default.addObserver(
-            self,
-            selector: #selector(handleDidMove(_:)),
-            name: NSWindow.didMoveNotification,
-            object: self
-        )
-    }
-
-    deinit {
-        NotificationCenter.default.removeObserver(self)
     }
 
     override var canBecomeKey: Bool { false }
     override var canBecomeMain: Bool { false }
 
-    /// Resize the panel in place, anchoring at the current bottom-left and
-    /// clamping back onto a visible screen if the new frame would spill off.
+    override func mouseDown(with event: NSEvent) {
+        let startMouse = NSEvent.mouseLocation
+        let startOrigin = frame.origin
+        var dragged = false
+        let dragThreshold: CGFloat = 4
+
+        // Pump events ourselves until the mouse is released; if total motion
+        // stays under the threshold treat it as a tap, otherwise drive a drag.
+        eventLoop: while let next = nextEvent(matching: [.leftMouseUp, .leftMouseDragged]) {
+            switch next.type {
+            case .leftMouseUp:
+                break eventLoop
+            case .leftMouseDragged:
+                let cur = NSEvent.mouseLocation
+                let dx = cur.x - startMouse.x
+                let dy = cur.y - startMouse.y
+                if hypot(dx, dy) > dragThreshold { dragged = true }
+                if dragged {
+                    setFrameOrigin(NSPoint(x: startOrigin.x + dx, y: startOrigin.y + dy))
+                }
+            default:
+                break
+            }
+        }
+
+        if dragged {
+            onMove?(frame.origin)
+        } else {
+            onClick?()
+        }
+    }
+
     func applySize(_ newSize: NSSize) {
         let candidate = NSRect(origin: frame.origin, size: newSize)
         let clamped = Self.clamp(frame: candidate)
         setFrame(clamped, display: true, animate: false)
     }
 
-    @objc private func handleDidMove(_ notification: Notification) {
-        Self.saveOrigin(frame.origin)
-    }
-
-    // MARK: - Origin persistence
-
-    private static func loadSavedOrigin(forSize size: NSSize) -> NSPoint? {
-        let defaults = UserDefaults.standard
-        guard let dict = defaults.dictionary(forKey: originDefaultsKey),
-              let x = dict["x"] as? Double,
-              let y = dict["y"] as? Double
-        else { return nil }
-        let candidate = NSRect(origin: NSPoint(x: x, y: y), size: size)
-        return clamp(frame: candidate).origin
-    }
-
-    private static func saveOrigin(_ point: NSPoint) {
-        let defaults = UserDefaults.standard
-        defaults.set(["x": Double(point.x), "y": Double(point.y)], forKey: originDefaultsKey)
-    }
-
-    private static func defaultOrigin(forSize size: NSSize) -> NSPoint {
-        guard let screen = NSScreen.main else { return .zero }
-        let visible = screen.visibleFrame
-        let margin: CGFloat = 24
-        return NSPoint(
-            x: visible.maxX - size.width - margin,
-            y: visible.minY + margin
-        )
-    }
-
-    /// Keep the supplied frame inside some visible screen. If it doesn't
-    /// intersect any, fall back to the default bottom-right placement.
     private static func clamp(frame: NSRect) -> NSRect {
         let screens = NSScreen.screens
         if screens.contains(where: { $0.visibleFrame.intersects(frame) }) {
             return frame
         }
-        return NSRect(origin: defaultOrigin(forSize: frame.size), size: frame.size)
+        if let screen = NSScreen.main {
+            let v = screen.visibleFrame
+            return NSRect(
+                origin: NSPoint(x: v.maxX - frame.width - 24, y: v.minY + 24),
+                size: frame.size
+            )
+        }
+        return frame
     }
 }

@@ -3,32 +3,30 @@ import SwiftUI
 struct CharacterView: View {
 
     @ObservedObject var tracker: TypingSpeedTracker
-    @ObservedObject var selection: CharacterSelectionModel
-    @ObservedObject var sizeModel: SizeSelectionModel
+    @ObservedObject var instance: CharacterInstance
+    @ObservedObject var store: InstancesStore
 
-    private var currentURL: URL? {
-        guard let character = selection.current else { return nil }
-        switch tracker.state {
-        case .idle:    return character.idleURL
-        case .running: return character.runURL
-        }
+    private var isAnimating: Bool {
+        tracker.state == .running || instance.clickBoost > 0
     }
 
-    /// Maps typing speed to playback rate. Idle is fixed at 0.7×; running
-    /// scales with characters-per-second so the run cycle accelerates as the
-    /// user types faster, capped to keep the animation watchable.
+    private var currentURL: URL? {
+        guard let character = instance.character else { return nil }
+        return isAnimating ? character.runURL : character.idleURL
+    }
+
+    /// Maps typing speed (+ per-instance click boost) to playback rate.
+    /// Idle is fixed at 0.7×. Running scales with effective CPS, capped at 4×
+    /// (raised from 3× so click bursts can push past pure-typing top speed).
     private var currentRate: Double {
-        switch tracker.state {
-        case .idle:
-            return 0.7
-        case .running:
-            let scaled = 0.8 + tracker.cps * 0.25
-            return min(max(scaled, 0.8), 3.0)
-        }
+        let effectiveCPS = tracker.cps + instance.clickBoost
+        if !isAnimating { return 0.7 }
+        let scaled = 0.8 + effectiveCPS * 0.25
+        return min(max(scaled, 0.8), 4.0)
     }
 
     private var sideLength: CGFloat {
-        CGFloat(sizeModel.current.rawValue)
+        CGFloat(instance.size.rawValue)
     }
 
     var body: some View {
@@ -46,13 +44,13 @@ struct CharacterView: View {
 
     @ViewBuilder
     private var menu: some View {
-        if !selection.library.isEmpty {
+        if !instance.library.isEmpty {
             Section("Character") {
-                ForEach(selection.library) { character in
+                ForEach(instance.library) { character in
                     Button {
-                        selection.select(character)
+                        instance.setCharacterID(character.id)
                     } label: {
-                        if character.id == selection.current?.id {
+                        if character.id == instance.characterID {
                             Label(character.displayName, systemImage: "checkmark")
                         } else {
                             Text(character.displayName)
@@ -64,9 +62,9 @@ struct CharacterView: View {
         Section("Size") {
             ForEach(CharacterSize.allCases) { size in
                 Button {
-                    sizeModel.select(size)
+                    instance.setSize(size)
                 } label: {
-                    if size == sizeModel.current {
+                    if size.rawValue == instance.sizeRaw {
                         Label(size.displayName, systemImage: "checkmark")
                     } else {
                         Text(size.displayName)
@@ -74,6 +72,15 @@ struct CharacterView: View {
                 }
             }
         }
+        Divider()
+        Button("Add Character (\(store.instances.count)/\(InstancesStore.maxInstances))") {
+            _ = store.add()
+        }
+        .disabled(store.instances.count >= InstancesStore.maxInstances)
+        Button("Remove This Character") {
+            store.remove(instance)
+        }
+        .disabled(store.instances.count <= 1)
         Divider()
         Button("Quit KeyHigh") {
             NSApp.terminate(nil)
